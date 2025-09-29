@@ -3,25 +3,30 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 ORANGE='\033[38;5;214m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 usage() {
-    echo "Usage: $0 [-d domain.lab] | [-L domain_list.txt] [-o output.md] [-H]"
+    echo "Usage: $0 [-d domain.lab] | [-L domain_list.txt] [-o output.md] [-H] [-v]"
     echo "  -d  Single domain to check"
     echo "  -L  File containing list of domains"
     echo "  -o  Output file (default: markdown format)"
     echo "  -H  Generate HTML report instead of markdown"
+    echo "  -v  Verbose mode (show all DNS queries)"
     exit 1
 }
 
 # Parse input arguments
 html_output=false
-while getopts "d:L:o:H" opt; do
+verbose=false
+while getopts "d:L:o:Hv" opt; do
     case $opt in
         d) single_domain=$OPTARG ;;
         L) domain_list=$OPTARG ;;
         o) output_file=$OPTARG ;;
         H) html_output=true ;;
+        v) verbose=true ;;
         *) usage ;;
     esac
 done
@@ -40,10 +45,13 @@ if [ -n "$domain_list" ] && [ ! -f "$domain_list" ]; then
     exit 1
 fi
 
-# Selector list for DKIM
+# Enhanced selector list for DKIM
 selectors=(
-    default dkim email emails google k1 key mail mails mxvault
+    default dkim email emails google k1 k2 k3 key mail mails mxvault
     s s1 s2 s3 s4 selector selector1 selector2 selector3 selector4 smtp
+    microsoft sendgrid mailgun amazonses mandrill postmark sparkpost
+    dkim1 dkim2 dkim3 google1 google2 google3 mx proton zoho mta mailer 
+    api relay web webmail mailjet mailchimp
 )
 
 # Risk counters
@@ -64,7 +72,7 @@ print_result() {
     if [ "$status" == "OK" ]; then
         echo -e "$type: ${GREEN}OK${NC} - $value $detailed_value"
     elif [ "$status" == "MED" ]; then
-        echo -e "$type: ${ORANGE}OK${NC} - $value $detailed_value"
+        echo -e "$type: ${ORANGE}MEDIUM${NC} - $value $detailed_value"
     else
         echo -e "$type: ${RED}NOK${NC}  - $value $detailed_value"
     fi
@@ -76,15 +84,22 @@ calculate_risk() {
     local dmarc=$3
     
     local nok_count=0
-    [ "$spf" = "NOK" ] && ((nok_count++))
-    [ "$dkim" = "NOK" ] && ((nok_count++))
-    [ "$dmarc" = "NOK" ] && ((nok_count++))
+    local med_count=0
     
-    case $nok_count in
-        0) echo "LOW" ;;
-        1) echo "MEDIUM" ;;
-        *) echo "HIGH" ;;
-    esac
+    [ "$spf" = "NOK" ] && ((nok_count++))
+    [ "$spf" = "MED" ] && ((med_count++))
+    [ "$dkim" = "NOK" ] && ((nok_count++))
+    [ "$dkim" = "MED" ] && ((med_count++))
+    [ "$dmarc" = "NOK" ] && ((nok_count++))
+    [ "$dmarc" = "MED" ] && ((med_count++))
+    
+    if [ $nok_count -ge 2 ]; then
+        echo "HIGH"
+    elif [ $nok_count -eq 1 ] || [ $med_count -ge 2 ]; then
+        echo "MEDIUM"
+    else
+        echo "LOW"
+    fi
 }
 
 update_risk_counters() {
@@ -94,6 +109,25 @@ update_risk_counters() {
         "MEDIUM") ((medium_risk++)) ;;
         "HIGH") ((high_risk++)) ;;
     esac
+}
+
+detect_email_service() {
+    local mx=$1
+    case "$mx" in
+        *google.com*|*googlemail.com*) echo "Google Workspace" ;;
+        *outlook.com*|*protection.outlook.com*) echo "Microsoft 365" ;;
+        *mail.ovh.*|*mx*.ovh.*) echo "OVH" ;;
+        *amazonses.com*) echo "Amazon SES" ;;
+        *mailgun.org*) echo "Mailgun" ;;
+        *sendgrid.net*) echo "SendGrid" ;;
+        *protonmail.ch*) echo "ProtonMail" ;;
+        *zoho.com*|*zoho.eu*) echo "Zoho Mail" ;;
+        *) echo "Custom" ;;
+    esac
+}
+
+dig_with_timeout() {
+    timeout 5 dig "$@" 2>/dev/null || echo "TIMEOUT"
 }
 
 append_report() {
@@ -112,16 +146,24 @@ append_report() {
         
         if [ "$spf" = "NOK" ]; then
             spf_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>Configurer SPF</a>)</small>"
+        elif [ "$spf" = "MED" ]; then
+            spf_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>Améliorer SPF</a>)</small>"
         else
             spf_cell="<span style='color:green'>✅ OK</span>"
         fi
+        
         if [ "$dkim" = "NOK" ]; then
             dkim_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>Configurer DKIM</a>)</small>"
+        elif [ "$dkim" = "MED" ]; then
+            dkim_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>Améliorer DKIM</a>)</small>"
         else
             dkim_cell="<span style='color:green'>✅ OK</span>"
         fi
+        
         if [ "$dmarc" = "NOK" ]; then
             dmarc_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>Configurer DMARC</a>)</small>"
+        elif [ "$dmarc" = "MED" ]; then
+            dmarc_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>Améliorer DMARC</a>)</small>"
         else
             dmarc_cell="<span style='color:green'>✅ OK</span>"
         fi
@@ -139,17 +181,25 @@ append_report() {
         local dmarc_cell="$dmarc"
 
         if [ "$spf" = "NOK" ]; then
-            spf_cell="❌ NOK ([Configurer SPF](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+            spf_cell="❌ NOK ([Configure SPF](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+        elif [ "$spf" = "MED" ]; then
+            spf_cell="⚠️ MEDIUM ([Improve SPF](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
         else
             spf_cell="✅ OK"
         fi
+        
         if [ "$dkim" = "NOK" ]; then
-            dkim_cell="❌ NOK ([Configurer DKIM](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+            dkim_cell="❌ NOK ([Configure DKIM](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+        elif [ "$dkim" = "MED" ]; then
+            dkim_cell="⚠️ MEDIUM ([Improve DKIM](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
         else
             dkim_cell="✅ OK"
         fi
+        
         if [ "$dmarc" = "NOK" ]; then
-            dmarc_cell="❌ NOK ([Configurer DMARC](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
+            dmarc_cell="❌ NOK ([Configure DMARC](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
+        elif [ "$dmarc" = "MED" ]; then
+            dmarc_cell="⚠️ MEDIUM ([Improve DMARC](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
         else
             dmarc_cell="✅ OK"
         fi
@@ -160,7 +210,7 @@ append_report() {
             "HIGH") risk_cell="🔴 HIGH" ;;
         esac
 
-        domains_table+="| $domain | $spf_cell | $dkim_cell | $dmarc_cell | $risk_cell
+        domains_table+="| $domain | $spf_cell | $dkim_cell | $dmarc_cell | $risk_cell |
 "
     fi
 }
@@ -172,71 +222,190 @@ check_domain() {
         domain="${domain%?}"
     done
 
-    mx_records=$(dig "$domain" MX +nostats +nocomments +noquestion +noauthority +noadditional | grep -Ev "noadditional|global options" | grep MX)
-    mx_records=$(echo "$mx_records" | tr -d '[:space:]')
-    if [ -n "$mx_records" ]; then
+    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Checking domain: $domain${NC}"
 
-        echo -e "\nFound domain: $domain"
-        echo -e "MX: ${GREEN}Found${NC}"
+    mx_records=$(dig_with_timeout "$domain" MX +nostats +nocomments +noquestion +noauthority +noadditional | grep -Ev "noadditional|global options" | grep MX)
+    
+    if [ "$mx_records" = "TIMEOUT" ] || [ -z "$mx_records" ]; then
+        [ "$verbose" = true ] && echo -e "${RED}[DEBUG] No MX records found or timeout${NC}"
+        return
+    fi
 
-        spf=$(dig "$domain" TXT +short | grep -i spf)
-        spf_status="NOK"
-        if [[ "$spf" == *"redirect="* ]]; then
-            redirect_domain=$(echo "$spf" | sed -n 's/.*redirect=\([^ ]*\).*/\1/p')
-            redirect_domain=${redirect_domain%\"}
-            spf=$(dig "$redirect_domain" TXT +short | grep -i spf | tr -d '"')
-        fi
-        if [[ -n "$spf" ]] && [[ "$spf" =~ [\?\+\~]all ]]; then
-            print_result "SPF" "NOK" "$spf" ""
+    echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}Found domain: $domain${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "MX: ${GREEN}Found${NC}"
+    
+    # Detect email service
+    service=$(detect_email_service "$mx_records")
+    echo -e "Service detected: ${GREEN}$service${NC}"
+
+    # SPF Check - Enhanced
+    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying SPF for $domain${NC}"
+    spf=$(dig_with_timeout "$domain" TXT +short | grep -i "v=spf1")
+    spf_status="NOK"
+    
+    if [[ "$spf" == *"redirect="* ]]; then
+        redirect_domain=$(echo "$spf" | sed -n 's/.*redirect=\([^ ]*\).*/\1/p' | tr -d '"')
+        [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] SPF redirect found: $redirect_domain${NC}"
+        spf=$(dig_with_timeout "$redirect_domain" TXT +short | grep -i "v=spf1" | tr -d '"')
+    fi
+    
+    if [ -n "$spf" ]; then
+        # Count includes (DNS lookup limit is 10)
+        include_count=$(echo "$spf" | grep -o "include:" | wc -l)
+        
+        if [[ "$spf" =~ \+all ]]; then
+            print_result "SPF" "NOK" "$spf" "${RED}(+all - accept ALL expeditors !)${NC}"
             spf_status="NOK"
-        elif [ -n "$spf" ]; then
-            print_result "SPF" "OK" "$spf" ""
+        elif [[ "$spf" =~ \?all ]]; then
+            print_result "SPF" "NOK" "$spf" "${RED}(?all - neutral, no protection)${NC}"
+            spf_status="NOK"
+        elif [[ "$spf" =~ ~all ]]; then
+            print_result "SPF" "MED" "$spf" "${ORANGE}(~all - softfail, low protection)${NC}"
+            spf_status="MED"
+        elif [[ "$spf" =~ -all ]]; then
+            print_result "SPF" "OK" "$spf" "${GREEN}(-all - hardfail, secure)${NC}"
             spf_status="OK"
         else
-            print_result "SPF" "NOK" "" ""
-            spf_status="NOK"
+            print_result "SPF" "MED" "$spf" "${ORANGE}(pas de mécanisme all défini)${NC}"
+            spf_status="MED"
         fi
+        
+        if [ "$include_count" -gt 8 ]; then
+            echo -e "${ORANGE}  ⚠️  Warning: $include_count includes detected (limit: 8-10)${NC}"
+        fi
+    else
+        print_result "SPF" "NOK" "Not configured" ""
+        spf_status="NOK"
+    fi
 
-        dkim_found=false
-        dkim_status="NOK"
-        for selector in "${selectors[@]}"; do
-            dkim=$(dig "$selector._domainkey.$domain" TXT +short | grep -i dkim)
-            if [ -n "$dkim" ]; then
-                dkim_found=true
-                dkim_status="OK"
-                public_key=$(echo "$dkim" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
-                if [ -n "$public_key" ]; then
-                    pk=$(echo "$public_key" | base64 -d 2>/dev/null | openssl rsa -inform DER -pubin -noout -text 2>/dev/null | sed -n 's/.*Public-Key: (\([0-9]*\) bit).*/\1/p')
-                    if [ "$pk" -gt 1024 ]; then
-                        print_result "DKIM ($selector)" "OK" "${GREEN}(RSA $pk bits)${NC}" "$dkim"
+    # DKIM Check
+    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying DKIM selectors: ${selectors[*]}${NC}"
+    dkim_found=false
+    dkim_status="NOK"
+    weak_dkim=false
+    
+    for selector in "${selectors[@]}"; do
+        dkim=$(dig_with_timeout "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
+        if [ -n "$dkim" ] && [ "$dkim" != "TIMEOUT" ]; then
+            dkim_found=true
+            dkim_status="OK"
+            public_key=$(echo "$dkim" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
+            
+            if [ -z "$public_key" ] || [ "$public_key" = "" ]; then
+                print_result "DKIM ($selector)" "NOK" "${RED}(Empty public key - DKIM revoked)${NC}" ""
+                dkim_status="NOK"
+            else
+                pk=$(echo "$public_key" | base64 -d 2>/dev/null | openssl rsa -inform DER -pubin -noout -text 2>/dev/null | sed -n 's/.*Public-Key: (\([0-9]*\) bit).*/\1/p')
+                
+                if [ -n "$pk" ]; then
+                    if [ "$pk" -lt 1024 ]; then
+                        print_result "DKIM ($selector)" "NOK" "${RED}(RSA $pk bits - INSECURE)${NC}" ""
+                        weak_dkim=true
+                        dkim_status="MED"
+                    elif [ "$pk" -eq 1024 ]; then
+                        print_result "DKIM ($selector)" "MED" "${ORANGE}(RSA $pk bits - minimum required)${NC}" ""
+                        weak_dkim=true
+                        dkim_status="MED"
                     else
-                        print_result "DKIM ($selector)" "OK" "${ORANGE}(RSA $pk bits)${NC}" "$dkim"
+                        print_result "DKIM ($selector)" "OK" "${GREEN}(RSA $pk bits - secure)${NC}" ""
                     fi
                 else
-                    print_result "DKIM ($selector)" "OK" "${ORANGE}(NULL)${NC}" "$dkim"
+                    print_result "DKIM ($selector)" "OK" "${GREEN}(configured)${NC}" ""
                 fi
             fi
-        done
-        if [ "$dkim_found" == false ]; then
-            print_result "DKIM" "NOK" "" ""
-            dkim_status="NOK"
         fi
-
-        dmarc=$(dig "_dmarc.$domain" TXT +short)
-        dmarc_status="NOK"
-        if [[ -n "$dmarc" ]] && [[ "$dmarc" == *"p=none"* ]]; then
-            print_result "DMARC" "NOK" "$dmarc" ""
-            dmarc_status="NOK"
-        elif [ -n "$dmarc" ]; then
-            print_result "DMARC" "OK" "$dmarc" ""
-            dmarc_status="OK"
-        else
-            print_result "DMARC" "NOK" "" ""
-            dmarc_status="NOK"
-        fi
-
-        append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
+    done
+    
+    if [ "$dkim_found" == false ]; then
+        print_result "DKIM" "NOK" "Not configured" ""
+        dkim_status="NOK"
+    elif [ "$weak_dkim" == true ]; then
+        echo -e "${ORANGE}  ⚠️  Recommendation: Use RSA keys with at least 2048 bits${NC}"
     fi
+
+    # DMARC Check
+    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying DMARC for _dmarc.$domain${NC}"
+    dmarc=$(dig_with_timeout "_dmarc.$domain" TXT +short | grep -i "v=DMARC1")
+    dmarc_status="NOK"
+    
+    if [ -n "$dmarc" ] && [ "$dmarc" != "TIMEOUT" ]; then
+        policy=$(echo "$dmarc" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
+        pct=$(echo "$dmarc" | sed -n 's/.*pct=\([^;]*\).*/\1/p' | tr -d '" ')
+        
+        case "$policy" in
+            "none")
+                print_result "DMARC" "NOK" "$dmarc" "${RED}(p=none - monitoring only, no protection)${NC}"
+                dmarc_status="NOK"
+                ;;
+            "quarantine")
+                print_result "DMARC" "MED" "$dmarc" "${ORANGE}(p=quarantine - medium protection)${NC}"
+                dmarc_status="MED"
+                ;;
+            "reject")
+                print_result "DMARC" "OK" "$dmarc" "${GREEN}(p=reject - protected)${NC}"
+                dmarc_status="OK"
+                ;;
+            *)
+                print_result "DMARC" "NOK" "$dmarc" "${RED}(invalid policy)${NC}"
+                dmarc_status="NOK"
+                ;;
+        esac
+        
+        # Check for reporting
+        if [[ "$dmarc" =~ rua= ]]; then
+            echo -e "${GREEN}  ✓${NC} Configured aggregate reports (rua)"
+        fi
+        if [[ "$dmarc" =~ ruf= ]]; then
+            echo -e "${GREEN}  ✓${NC} Configured forensic reports (ruf)"
+        fi
+        
+        # Check percentage
+        if [ -n "$pct" ] && [ "$pct" -lt 100 ]; then
+            echo -e "${ORANGE}  ⚠️  Policy applied to ${pct}% of messages only${NC}"
+        fi
+    else
+        print_result "DMARC" "NOK" "Not configured" ""
+        dmarc_status="NOK"
+    fi
+
+    # Additional Security Checks
+    echo -e "\n${YELLOW}Additional Security Protocols:${NC}"
+    
+    # BIMI Check
+    bimi=$(dig_with_timeout "default._bimi.$domain" TXT +short 2>/dev/null)
+    if [ -n "$bimi" ] && [ "$bimi" != "TIMEOUT" ]; then
+        echo -e "BIMI: ${GREEN}✓ Configured${NC}"
+    else
+        echo -e "BIMI: ${RED}✗ Not configured${NC}"
+    fi
+    
+    # MTA-STS Check
+    mta_sts=$(dig_with_timeout "_mta-sts.$domain" TXT +short 2>/dev/null | grep -i "v=STSv1")
+    if [ -n "$mta_sts" ] && [ "$mta_sts" != "TIMEOUT" ]; then
+        echo -e "MTA-STS: ${GREEN}✓ Configured${NC}"
+    else
+        echo -e "MTA-STS: ${RED}✗ Not configured${NC}"
+    fi
+    
+    # TLS-RPT Check
+    tls_rpt=$(dig_with_timeout "_smtp._tls.$domain" TXT +short 2>/dev/null | grep -i "v=TLSRPTv1")
+    if [ -n "$tls_rpt" ] && [ "$tls_rpt" != "TIMEOUT" ]; then
+        echo -e "TLS-RPT: ${GREEN}✓ Configured${NC}"
+    else
+        echo -e "TLS-RPT: ${RED}✗ Not configured${NC}"
+    fi
+    
+    # DNSSEC Check
+    dnssec=$(dig_with_timeout "$domain" +dnssec +short 2>/dev/null | grep "RRSIG")
+    if [ -n "$dnssec" ] && [ "$dnssec" != "TIMEOUT" ]; then
+        echo -e "DNSSEC: ${GREEN}✓ Activated${NC}"
+    else
+        echo -e "DNSSEC: ${RED}✗ Not activated${NC}"
+    fi
+
+    append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
 }
 
 generate_html_report() {
@@ -271,6 +440,7 @@ generate_html_report() {
         a { color: #007bff; text-decoration: none; }
         a:hover { text-decoration: underline; }
         small { font-size: 0.8em; }
+        .footer { text-align: center; padding: 20px; color: #666; font-size: 0.9em; border-top: 1px solid #eee; }
     </style>
 </head>
 <body>
@@ -313,8 +483,12 @@ generate_html_report() {
                     </tr>
                 </thead>
                 <tbody>
-$domains_table                </tbody>
+$domains_table
+                </tbody>
             </table>
+        </div>
+        <div class="footer">
+            <p>Generated by Mailynx - Email Security Auditing Tool</p>
         </div>
     </div>
 </body>
@@ -343,26 +517,45 @@ generate_markdown_report() {
 | Domain | SPF | DKIM | DMARC | Risk Level |
 |--------|-----|------|-------|------------|
 $domains_table
+
+---
+*Generated by Mailynx - Email Security Auditing Tool*
 EOF
 }
 
 # Initialize domains table
 domains_table=""
 
+echo -e "${GREEN}"
+echo "╔═══════════════════════════════════════════════════════════╗"
+echo "║                                                           ║"
+echo "║                          Mailynx                          ║"
+echo "║                                                           ║"
+echo "║             Email Security Configuration Auditor          ║"
+echo "╚═══════════════════════════════════════════════════════════╝"
+echo -e "${NC}"
+
 if [ -n "$single_domain" ]; then
     check_domain "$single_domain"
 elif [ -n "$domain_list" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^#.*$ ]] && continue
+        [[ -z "$line" ]] && continue
         check_domain "$line"
     done < "$domain_list"
 fi
+
+echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}Analysis Complete!${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # Generate and save report if output_file is set
 if [ -n "$output_file" ]; then
     if [ "$html_output" = true ]; then
         generate_html_report > "$output_file"
+        echo -e "${GREEN}HTML report saved to $output_file${NC}"
     else
         generate_markdown_report > "$output_file"
+        echo -e "${GREEN}Markdown report saved to $output_file${NC}"
     fi
-    echo "Report saved to $output_file"
 fi
