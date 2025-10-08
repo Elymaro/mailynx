@@ -13,7 +13,7 @@ usage() {
     echo "  -L  File containing list of domains"
     echo "  -o  Output file (default: markdown format)"
     echo "  -H  Generate HTML report instead of markdown"
-    echo "  -v  Verbose mode (show all DNS queries)"
+    echo "  -v  Verbose mode (display all analysed domains)"
     exit 1
 }
 
@@ -43,6 +43,25 @@ fi
 if [ -n "$domain_list" ] && [ ! -f "$domain_list" ]; then
     echo "File $domain_list not found!"
     exit 1
+fi
+
+if [ -n "$output_file" ]; then
+    if [ -d "$output_file" ]; then
+        echo "Error: $output_file is a directory!" >&2
+        usage
+    fi
+
+    dir=$(dirname -- "$output_file")
+
+    if [ ! -d "$dir" ]; then
+        echo "Error: directory $dir does not exist for output file $output_file" >&2
+        exit 1
+    fi
+
+    if [ ! -w "$dir" ]; then
+        echo "Error: directory $dir is not writable" >&2
+        exit 1
+    fi
 fi
 
 # Enhanced selector list for DKIM
@@ -79,26 +98,26 @@ print_result() {
 }
 
 calculate_risk() {
-    local spf=$1
-    local dkim=$2
-    local dmarc=$3
-    
-    local nok_count=0
-    local med_count=0
-    
-    [ "$spf" = "NOK" ] && ((nok_count++))
-    [ "$spf" = "MED" ] && ((med_count++))
-    [ "$dkim" = "NOK" ] && ((nok_count++))
-    [ "$dkim" = "MED" ] && ((med_count++))
-    [ "$dmarc" = "NOK" ] && ((nok_count++))
-    [ "$dmarc" = "MED" ] && ((med_count++))
-    
-    if [ $nok_count -ge 2 ]; then
+    local spf_status=$1
+    local dkim_status=$2
+    local dmarc_status=$3
+
+    if [ "$dmarc_status" = "NOK" ]; then
         echo "HIGH"
-    elif [ $nok_count -eq 1 ] || [ $med_count -ge 2 ]; then
+        return
+    fi
+
+    if [ "$dmarc_status" = "MED" ]; then
         echo "MEDIUM"
-    else
+        return
+    fi
+
+    if [ "$spf_status" = "OK" ] && [ "$dkim_status" = "OK" ]; then
         echo "LOW"
+    elif [ "$spf_status" = "NOK" ] && [ "$dkim_status" = "OK" ]; then
+        echo "LOW"
+    else
+        echo "MEDIUM"
     fi
 }
 
@@ -132,38 +151,41 @@ dig_with_timeout() {
 
 append_report() {
     local domain=$1
-    local spf=$2
-    local dkim=$3
-    local dmarc=$4
+    local spf_status=$2
+    local spf_detailled=$3
+    local dkim_status=$4
+    local dkim_detailled=$5
+    local dmarc_status=$6
+    local dmarc_detailled=$7
 
-    local risk_level=$(calculate_risk "$spf" "$dkim" "$dmarc")
+    local risk_level=$(calculate_risk "$spf_status" "$dkim_status" "$dmarc_status")
     update_risk_counters "$risk_level"
 
     if [ "$html_output" = true ]; then
-        local spf_cell="$spf"
-        local dkim_cell="$dkim"
-        local dmarc_cell="$dmarc"
+        local spf_cell="$spf_status"
+        local dkim_cell="$dkim_status"
+        local dmarc_cell="$dmarc_status"
         
-        if [ "$spf" = "NOK" ]; then
-            spf_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>Configurer SPF</a>)</small>"
-        elif [ "$spf" = "MED" ]; then
-            spf_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>Améliorer SPF</a>)</small>"
+        if [ "$spf_status" = "NOK" ]; then
+            spf_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF configuration</a>)</small>"
+        elif [ "$spf_status" = "MED" ]; then
+            spf_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF recommandations</a>)</small>"
         else
             spf_cell="<span style='color:green'>✅ OK</span>"
         fi
         
-        if [ "$dkim" = "NOK" ]; then
-            dkim_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>Configurer DKIM</a>)</small>"
-        elif [ "$dkim" = "MED" ]; then
-            dkim_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>Améliorer DKIM</a>)</small>"
+        if [ "$dkim_status" = "NOK" ]; then
+            dkim_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM configuration</a>)</small>"
+        elif [ "$dkim_status" = "MED" ]; then
+            dkim_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM recommandations</a>)</small>"
         else
             dkim_cell="<span style='color:green'>✅ OK</span>"
         fi
         
-        if [ "$dmarc" = "NOK" ]; then
-            dmarc_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>Configurer DMARC</a>)</small>"
-        elif [ "$dmarc" = "MED" ]; then
-            dmarc_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>Améliorer DMARC</a>)</small>"
+        if [ "$dmarc_status" = "NOK" ]; then
+            dmarc_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>DMARC configuration</a>)</small>"
+        elif [ "$dmarc_status" = "MED" ]; then
+            dmarc_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>DMARC recommandations</a>)</small>"
         else
             dmarc_cell="<span style='color:green'>✅ OK</span>"
         fi
@@ -174,32 +196,73 @@ append_report() {
             "HIGH") risk_cell="<span style='color:red'>🔴 HIGH</span>" ;;
         esac
         
-        domains_table+="    <tr><td>$domain</td><td>$spf_cell</td><td>$dkim_cell</td><td>$dmarc_cell</td><td>$risk_cell</td></tr>"
-    else
-        local spf_cell="$spf"
-        local dkim_cell="$dkim"
-        local dmarc_cell="$dmarc"
+details_html=$(cat << EOF
+<style>
+.detail-box { border-radius:8px; border:1px solid #e6e9ed; background:#fbfcfd; padding:14px; }
+.detail-head { font-weight:700; margin-bottom:8px; color:#2d3748; display:flex; justify-content:space-between; align-items:center; }
+.detail-sub { color:#4a5568; font-size:0.95rem; margin-bottom:8px; margin-top:8px; }
+.tech { margin-top:12px; margin-bottom:12px; background:#fff; border:1px solid #eef2f7; padding:1px 20px 1px 20px; border-radius:6px; font-family: Menlo, Monaco, monospace; font-size:0.88rem; color:#1f2937; white-space:pre-wrap; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.8rem; margin-left:6px; font-weight:400; }
+.badge.ok { background:#e6ffed; color:#08660d; border:1px solid #b7f3c8; }
+.badge.nok { background:#ffecec; color:#a61b1b; border:1px solid #f3c2c2; }
+.muted { color:#2d3748; font-weight:400; }
+.label { color:#6b7280; font-size:0.85rem; margin-right:6px; }
+.u { text-decoration:underline; color:#374151; }
+</style>
 
-        if [ "$spf" = "NOK" ]; then
-            spf_cell="❌ NOK ([Configure SPF](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
-        elif [ "$spf" = "MED" ]; then
-            spf_cell="⚠️ MEDIUM ([Improve SPF](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+<div class="detail-box">
+  <div><span class="label">Service: $service</span></div>
+
+  <div class="detail-sub"><span class="u">Major controls:</span></div>
+  <div class="tech">
+SPF:  $( [ -n "$spf_detailled" ] && echo "<span class='muted'> ${spf_detailled}</span>" || echo "<span class='badge nok'>Not configured</span>" )
+DKIM:   $( [ -n "$dkim_detailled" ] && echo "<span class='badge ok'>(RSA $dkim_detailled bits)</span>" || echo "<span class='badge nok'>Not configured</span>" )
+DMARC:  $( [ -n "$dmarc_detailled" ] && echo "<span class='muted'> ${dmarc_detailled}</span>" || echo "<span class='badge nok'>Not configured</span>" )
+  </div>
+
+  <div class="detail-sub"><span class="u">Additional Security Protocols:</span></div>
+  <div class="tech">
+BIMI:    $( [ -n "$bimi" ] && [ "$bimi" != "TIMEOUT" ] && echo "<span class='badge ok'>✓ Configured</span>" || echo "<span class='badge nok'>✗ Not configured</span>" )
+MTA-STS: $( [ -n "$mta_sts" ] && [ "$mta_sts" != "TIMEOUT" ] && echo "<span class='badge ok'>✓ Configured</span>" || echo "<span class='badge nok'>✗ Not configured</span>" )
+TLS-RPT: $( [ -n "$tls_rpt" ] && [ "$tls_rpt" != "TIMEOUT" ] && echo "<span class='badge ok'>✓ Configured</span>" || echo "<span class='badge nok'>✗ Not configured</span>" )
+DNSSEC:  $( [ -n "$dnssec" ] && [ "$dnssec" != "TIMEOUT" ] && echo "<span class='badge ok'>✓ Activated</span>" || echo "<span class='badge nok'>✗ Not activated</span>" )
+  </div>
+</div>
+EOF
+)
+
+        domains_table+="
+        <tr class='clickable' onclick=\"toggleDetails(this)\">
+        <td>$domain</td><td>$spf_cell</td><td>$dkim_cell</td><td>$dmarc_cell</td><td>$risk_cell</td>
+        </tr>
+        <tr class='details-row'>
+        <td colspan='5' class='details-cell'>$details_html</td>
+        </tr>"
+    else
+        local spf_cell="$spf_status"
+        local dkim_cell="$dkim_status"
+        local dmarc_cell="$dmarc_status"
+
+        if [ "$spf_status" = "NOK" ]; then
+            spf_cell="❌ NOK ([SPF configuration](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+        elif [ "$spf_status" = "MED" ]; then
+            spf_cell="⚠️ MEDIUM ([SPF recommandation](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
         else
             spf_cell="✅ OK"
         fi
         
-        if [ "$dkim" = "NOK" ]; then
-            dkim_cell="❌ NOK ([Configure DKIM](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
-        elif [ "$dkim" = "MED" ]; then
-            dkim_cell="⚠️ MEDIUM ([Improve DKIM](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+        if [ "$dkim_status" = "NOK" ]; then
+            dkim_cell="❌ NOK ([DKIM configuration](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+        elif [ "$dkim_status" = "MED" ]; then
+            dkim_cell="⚠️ MEDIUM ([DKIM recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
         else
             dkim_cell="✅ OK"
         fi
         
-        if [ "$dmarc" = "NOK" ]; then
-            dmarc_cell="❌ NOK ([Configure DMARC](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
-        elif [ "$dmarc" = "MED" ]; then
-            dmarc_cell="⚠️ MEDIUM ([Improve DMARC](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
+        if [ "$dmarc_status" = "NOK" ]; then
+            dmarc_cell="❌ NOK ([DMARC configuration](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
+        elif [ "$dmarc_status" = "MED" ]; then
+            dmarc_cell="⚠️ MEDIUM ([DMARC recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
         else
             dmarc_cell="✅ OK"
         fi
@@ -327,9 +390,6 @@ check_domain() {
         dmarc_status="NOK"
     fi
 
-    append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
-
-
     # Additional Security Checks
     echo -e "\n${YELLOW}Additional Security Protocols:${NC}"
     
@@ -365,7 +425,7 @@ check_domain() {
         echo -e "DNSSEC: ${RED}✗ Not activated${NC}"
     fi
 
-    append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
+    append_report "$domain" "$spf_status" "$spf" "$dkim_status" "$pk" "$dmarc_status" "$dmarc"
 }
 
 generate_html_report() {
@@ -393,6 +453,10 @@ generate_html_report() {
         .risk-card h3 { margin: 0 0 10px; font-size: 1.2em; }
         .risk-card .count { font-size: 2em; font-weight: bold; margin: 10px 0; }
         .risk-card .percentage { color: #666; }
+        .details-row { display: none; background: #fafafa; }
+        .details-cell { padding: 0 20px 15px 20px; }
+        tr.clickable:hover { background: #eef6ff; cursor: pointer; }
+        pre { margin: 0; font-size: 0.9em; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
         th { background: #f8f9fa; font-weight: 600; color: #495057; }
@@ -448,9 +512,17 @@ $domains_table
             </table>
         </div>
         <div class="footer">
-            <p>Generated by Mailynx - Email Security Auditing Tool</p>
+            <p>Generated by <a href="https://github.com/Elymaro/mailynx" target="_blank" rel="noopener noreferrer" style="color:inherit; text-decoration:none;"><u>Mailynx</u></a> - Mail DNS Records Audit Tool</p>
         </div>
     </div>
+    <script>
+        function toggleDetails(row) {
+            const next = row.nextElementSibling;
+            if (next && next.classList.contains('details-row')) {
+                next.style.display = next.style.display === 'table-row' ? 'none' : 'table-row';
+            }
+        }
+    </script>
 </body>
 </html>
 EOF
@@ -479,7 +551,7 @@ generate_markdown_report() {
 $domains_table
 
 ---
-*Generated by Mailynx - Email Security Auditing Tool*
+*Generated by Mailynx - Mail DNS Records Audit Tool*
 EOF
 }
 
@@ -488,10 +560,9 @@ domains_table=""
 
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║                                                           ║"
 echo "║                          Mailynx                          ║"
 echo "║                                                           ║"
-echo "║             Email Security Configuration Auditor          ║"
+echo "║                 Mail DNS Records Audit Tool               ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
