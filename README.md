@@ -18,10 +18,6 @@ From a file and an output in HTML format:
 ./mailynx.sh -L domain_list.txt -o example.html -H
 ```
 
-## Output exemple
-
-<img width="1055" height="531" alt="CLI_output_example" src="https://github.com/user-attachments/assets/2c104667-32d1-4103-a33e-08ab36b3334c" />
-
 
 ## How It Works
 For each domain provided, the tool starts by checking if an MX record is present. If no mail server is found, the script either stops or moves on to the next domain.
@@ -61,6 +57,19 @@ Result interpretation (based on receiver and DMARC policy):
 | `p=reject`     | Reject policy                    | The email is **rejected outright**.                                                    |
 | `p=quarantine` | Quarantine policy                | The email is **delivered to the spam/junk folder** or flagged as suspicious.           |
 | `p=none`       | Monitoring only                  | The email is **delivered normally**, but failure reports are sent to the domain owner. |
+
+## Output example
+### CLI:
+<img width="1055" height="531" alt="CLI_output_example" src="https://github.com/user-attachments/assets/2c104667-32d1-4103-a33e-08ab36b3334c" />
+
+### HTML:
+<img width="1211" height="799" alt="HTML_output_example" src="https://github.com/user-attachments/assets/767636a7-f6a1-4680-8181-8af5f6357bd9" />
+
+## Contributors
+
+As always, thanks to the amazing contributors!
+
+- <a href="https://github.com/ExHo7" title="ExHo7"><img src="https://avatars.githubusercontent.com/u/112818894?v=4" width="36;" alt="ExHo7"/> ExHo7</a> : Integrated Markdown and HTML output; added several additional control checks.
 
 ## Disclaimer
 
