@@ -127,7 +127,7 @@ detect_email_service() {
 }
 
 dig_with_timeout() {
-    timeout 5 dig "$@" 2>/dev/null || echo "TIMEOUT"
+    timeout 5 dig +short "$@" 2>/dev/null || echo "TIMEOUT"
 }
 
 append_report() {
@@ -224,10 +224,12 @@ check_domain() {
 
     [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Checking domain: $domain${NC}"
 
-    mx_records=$(dig_with_timeout "$domain" MX +nostats +nocomments +noquestion +noauthority +noadditional | grep -Ev "noadditional|global options" | grep MX)
+    # MX Records check - Simplified and more robust
+    mx_records=$(dig "$domain" MX +nostats +nocomments +noquestion +noauthority +noadditional | grep -Ev "noadditional|global options" | grep MX)
+    mx_records=$(echo "$mx_records" | tr -d '[:space:]')
     
-    if [ "$mx_records" = "TIMEOUT" ] || [ -z "$mx_records" ]; then
-        [ "$verbose" = true ] && echo -e "${RED}[DEBUG] No MX records found or timeout${NC}"
+    if [ -z "$mx_records" ]; then
+        echo -e "${RED}[ERROR] No MX records found for domain: $domain${NC}"
         return
     fi
 
@@ -240,21 +242,17 @@ check_domain() {
     service=$(detect_email_service "$mx_records")
     echo -e "Service detected: ${GREEN}$service${NC}"
 
-    # SPF Check - Enhanced
-    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying SPF for $domain${NC}"
-    spf=$(dig_with_timeout "$domain" TXT +short | grep -i "v=spf1")
+    # SPF Check
+    spf=$(dig "$domain" TXT +short | grep -i "v=spf1")
     spf_status="NOK"
     
     if [[ "$spf" == *"redirect="* ]]; then
-        redirect_domain=$(echo "$spf" | sed -n 's/.*redirect=\([^ ]*\).*/\1/p' | tr -d '"')
-        [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] SPF redirect found: $redirect_domain${NC}"
-        spf=$(dig_with_timeout "$redirect_domain" TXT +short | grep -i "v=spf1" | tr -d '"')
+        redirect_domain=$(echo "$spf" | sed -n 's/.*redirect=\([^ ]*\).*/\1/p')
+        redirect_domain=${redirect_domain%\"}
+        spf=$(dig "$redirect_domain" TXT +short | grep -i "v=spf1" | tr -d '"')
     fi
-    
+
     if [ -n "$spf" ]; then
-        # Count includes (DNS lookup limit is 10)
-        include_count=$(echo "$spf" | grep -o "include:" | wc -l)
-        
         if [[ "$spf" =~ \+all ]]; then
             print_result "SPF" "NOK" "$spf" "${RED}(+all - accept ALL expeditors !)${NC}"
             spf_status="NOK"
@@ -262,18 +260,14 @@ check_domain() {
             print_result "SPF" "NOK" "$spf" "${RED}(?all - neutral, no protection)${NC}"
             spf_status="NOK"
         elif [[ "$spf" =~ ~all ]]; then
-            print_result "SPF" "MED" "$spf" "${ORANGE}(~all - softfail, low protection)${NC}"
+            print_result "SPF" "MED" "$spf" "${ORANGE}(~all - softfail)${NC}"
             spf_status="MED"
         elif [[ "$spf" =~ -all ]]; then
-            print_result "SPF" "OK" "$spf" "${GREEN}(-all - hardfail, secure)${NC}"
+            print_result "SPF" "OK" "$spf" "${GREEN}(-all)${NC}"
             spf_status="OK"
         else
-            print_result "SPF" "MED" "$spf" "${ORANGE}(pas de mécanisme all défini)${NC}"
-            spf_status="MED"
-        fi
-        
-        if [ "$include_count" -gt 8 ]; then
-            echo -e "${ORANGE}  ⚠️  Warning: $include_count includes detected (limit: 8-10)${NC}"
+            print_result "SPF" "NOK" "$spf" "${RED}(no all mechanism)${NC}"
+            spf_status="NOK"
         fi
     else
         print_result "SPF" "NOK" "Not configured" ""
@@ -281,38 +275,25 @@ check_domain() {
     fi
 
     # DKIM Check
-    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying DKIM selectors: ${selectors[*]}${NC}"
     dkim_found=false
     dkim_status="NOK"
-    weak_dkim=false
     
     for selector in "${selectors[@]}"; do
-        dkim=$(dig_with_timeout "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
-        if [ -n "$dkim" ] && [ "$dkim" != "TIMEOUT" ]; then
+        dkim=$(dig "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
+        if [ -n "$dkim" ]; then
             dkim_found=true
             dkim_status="OK"
             public_key=$(echo "$dkim" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
             
-            if [ -z "$public_key" ] || [ "$public_key" = "" ]; then
-                print_result "DKIM ($selector)" "NOK" "${RED}(Empty public key - DKIM revoked)${NC}" ""
-                dkim_status="NOK"
-            else
+            if [ -n "$public_key" ]; then
                 pk=$(echo "$public_key" | base64 -d 2>/dev/null | openssl rsa -inform DER -pubin -noout -text 2>/dev/null | sed -n 's/.*Public-Key: (\([0-9]*\) bit).*/\1/p')
-                
                 if [ -n "$pk" ]; then
-                    if [ "$pk" -lt 1024 ]; then
-                        print_result "DKIM ($selector)" "NOK" "${RED}(RSA $pk bits - INSECURE)${NC}" ""
-                        weak_dkim=true
-                        dkim_status="MED"
-                    elif [ "$pk" -eq 1024 ]; then
-                        print_result "DKIM ($selector)" "MED" "${ORANGE}(RSA $pk bits - minimum required)${NC}" ""
-                        weak_dkim=true
-                        dkim_status="MED"
+                    if [ "$pk" -ge 2048 ]; then
+                        print_result "DKIM ($selector)" "OK" "${GREEN}(RSA $pk bits)${NC}" ""
                     else
-                        print_result "DKIM ($selector)" "OK" "${GREEN}(RSA $pk bits - secure)${NC}" ""
+                        print_result "DKIM ($selector)" "MED" "${ORANGE}(RSA $pk bits - weak)${NC}" ""
+                        dkim_status="MED"
                     fi
-                else
-                    print_result "DKIM ($selector)" "OK" "${GREEN}(configured)${NC}" ""
                 fi
             fi
         fi
@@ -321,54 +302,33 @@ check_domain() {
     if [ "$dkim_found" == false ]; then
         print_result "DKIM" "NOK" "Not configured" ""
         dkim_status="NOK"
-    elif [ "$weak_dkim" == true ]; then
-        echo -e "${ORANGE}  ⚠️  Recommendation: Use RSA keys with at least 2048 bits${NC}"
     fi
 
     # DMARC Check
-    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Querying DMARC for _dmarc.$domain${NC}"
-    dmarc=$(dig_with_timeout "_dmarc.$domain" TXT +short | grep -i "v=DMARC1")
+    dmarc=$(dig "_dmarc.$domain" TXT +short | grep -i "v=DMARC1")
     dmarc_status="NOK"
     
-    if [ -n "$dmarc" ] && [ "$dmarc" != "TIMEOUT" ]; then
-        policy=$(echo "$dmarc" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
-        pct=$(echo "$dmarc" | sed -n 's/.*pct=\([^;]*\).*/\1/p' | tr -d '" ')
-        
-        case "$policy" in
-            "none")
-                print_result "DMARC" "NOK" "$dmarc" "${RED}(p=none - monitoring only, no protection)${NC}"
-                dmarc_status="NOK"
-                ;;
-            "quarantine")
-                print_result "DMARC" "MED" "$dmarc" "${ORANGE}(p=quarantine - medium protection)${NC}"
-                dmarc_status="MED"
-                ;;
-            "reject")
-                print_result "DMARC" "OK" "$dmarc" "${GREEN}(p=reject - protected)${NC}"
-                dmarc_status="OK"
-                ;;
-            *)
-                print_result "DMARC" "NOK" "$dmarc" "${RED}(invalid policy)${NC}"
-                dmarc_status="NOK"
-                ;;
-        esac
-        
-        # Check for reporting
-        if [[ "$dmarc" =~ rua= ]]; then
-            echo -e "${GREEN}  ✓${NC} Configured aggregate reports (rua)"
-        fi
-        if [[ "$dmarc" =~ ruf= ]]; then
-            echo -e "${GREEN}  ✓${NC} Configured forensic reports (ruf)"
-        fi
-        
-        # Check percentage
-        if [ -n "$pct" ] && [ "$pct" -lt 100 ]; then
-            echo -e "${ORANGE}  ⚠️  Policy applied to ${pct}% of messages only${NC}"
+    if [ -n "$dmarc" ]; then
+        if [[ "$dmarc" == *"p=none"* ]]; then
+            print_result "DMARC" "NOK" "$dmarc" "${RED}(monitoring only)${NC}"
+            dmarc_status="NOK"
+        elif [[ "$dmarc" == *"p=quarantine"* ]]; then
+            print_result "DMARC" "MED" "$dmarc" "${ORANGE}(quarantine)${NC}"
+            dmarc_status="MED"
+        elif [[ "$dmarc" == *"p=reject"* ]]; then
+            print_result "DMARC" "OK" "$dmarc" "${GREEN}(reject)${NC}"
+            dmarc_status="OK"
+        else
+            print_result "DMARC" "NOK" "$dmarc" "${RED}(invalid policy)${NC}"
+            dmarc_status="NOK"
         fi
     else
         print_result "DMARC" "NOK" "Not configured" ""
         dmarc_status="NOK"
     fi
+
+    append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
+
 
     # Additional Security Checks
     echo -e "\n${YELLOW}Additional Security Protocols:${NC}"
