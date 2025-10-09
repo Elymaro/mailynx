@@ -327,9 +327,6 @@ check_domain() {
         dmarc_status="NOK"
     fi
 
-    append_report "$domain" "$spf_status" "$dkim_status" "$dmarc_status"
-
-
     # Additional Security Checks
     echo -e "\n${YELLOW}Additional Security Protocols:${NC}"
     
