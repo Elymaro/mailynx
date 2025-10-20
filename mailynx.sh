@@ -287,6 +287,17 @@ check_domain() {
 
     [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Checking domain: $domain${NC}"
 
+    if [[ "$domain" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        ptr_record=$(dig -x "$domain" +nostats +nocomments +noquestion +noadditional | awk '/PTR/ {print $5}' | sed 's/\.$//')
+        if [ -n "$ptr_record" ]; then
+            [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Reverse lookup found PTR: $ptr_record${NC}"
+            domain="$ptr_record"
+        else
+            echo -e "${RED}[ERROR] No PTR record found for IP: $domain${NC}"
+            return
+        fi
+    fi
+    
     # MX Records check - Simplified and more robust
     mx_records=$(dig "$domain" MX +nostats +nocomments +noquestion +noauthority +noadditional | grep -Ev "noadditional|global options" | grep MX)
     mx_records=$(echo "$mx_records" | tr -d '[:space:]')
