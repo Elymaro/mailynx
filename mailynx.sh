@@ -146,7 +146,7 @@ detect_email_service() {
 }
 
 dig_with_timeout() {
-    timeout 5 dig +short "$@" 2>/dev/null || echo "TIMEOUT"
+    timeout 1 dig "$@" 2>/dev/null || echo "TIMEOUT"
 }
 
 append_report() {
@@ -353,7 +353,7 @@ check_domain() {
     dkim_status="NOK"
     
     for selector in "${selectors[@]}"; do
-        dkim=$(dig "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
+        dkim=$(timeout 1 dig "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
         if [ -n "$dkim" ]; then
             dkim_found=true
             dkim_status="OK"
@@ -405,7 +405,7 @@ check_domain() {
     echo -e "\n${YELLOW}Additional Security Protocols:${NC}"
     
     # BIMI Check
-    bimi=$(dig_with_timeout "default._bimi.$domain" TXT +short 2>/dev/null)
+    bimi=$(dig_with_timeout "default._bimi.$domain" TXT +short 2>/dev/null | grep -i "v=BIMI1")
     if [ -n "$bimi" ] && [ "$bimi" != "TIMEOUT" ]; then
         echo -e "BIMI: ${GREEN}✓ Configured${NC}"
     else
@@ -429,8 +429,10 @@ check_domain() {
     fi
     
     # DNSSEC Check
-    dnssec=$(dig_with_timeout "$domain" +dnssec +short 2>/dev/null | grep "RRSIG")
-    if [ -n "$dnssec" ] && [ "$dnssec" != "TIMEOUT" ]; then
+    dnskey=$(dig_with_timeout "$domain" DNSKEY)
+    ds=$(dig_with_timeout "$domain" DS)
+    if echo "$dnskey" | grep -q '\sDNSKEY\s' && echo "$ds" | grep -q '\sDS\s'; then
+        dnssec="OK"
         echo -e "DNSSEC: ${GREEN}✓ Activated${NC}"
     else
         echo -e "DNSSEC: ${RED}✗ Not activated${NC}"
