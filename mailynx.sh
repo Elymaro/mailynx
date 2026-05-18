@@ -285,7 +285,9 @@ check_domain() {
         domain="${domain%?}"
     done
 
-    [ "$verbose" = true ] && echo -e "${BLUE}[DEBUG] Checking domain: $domain${NC}"
+    echo ""
+
+    [ "$verbose" = true ] && echo -e "[DEBUG] Checking domain: $domain${NC}"
 
     if [[ "$domain" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
         ptr_record=$(dig -x "$domain" +nostats +nocomments +noquestion +noadditional | awk '/PTR/ {print $5}' | sed 's/\.$//')
