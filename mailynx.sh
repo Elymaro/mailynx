@@ -75,7 +75,7 @@ selectors=(
 
 # Risk counters
 low_risk=0
-medium_risk=0
+moderate_risk=0
 high_risk=0
 
 sanitize_domain() {
@@ -91,9 +91,9 @@ print_result() {
     if [ "$status" == "OK" ]; then
         echo -e "$type: ${GREEN}OK${NC} - $value $detailed_value"
     elif [ "$status" == "MED" ]; then
-        echo -e "$type: ${ORANGE}MEDIUM${NC} - $value $detailed_value"
+        echo -e "$type: ${ORANGE}MODERATE${NC} - $value $detailed_value"
     else
-        echo -e "$type: ${RED}NOK${NC}  - $value $detailed_value"
+        echo -e "$type: ${RED}NOK${NC} - $value $detailed_value"
     fi
 }
 
@@ -108,7 +108,7 @@ calculate_risk() {
     fi
 
     if [ "$dmarc_status" = "MED" ]; then
-        echo "MEDIUM"
+        echo "MODERATE"
         return
     fi
 
@@ -117,7 +117,7 @@ calculate_risk() {
     elif [ "$spf_status" = "NOK" ] && [ "$dkim_status" = "OK" ]; then
         echo "LOW"
     else
-        echo "MEDIUM"
+        echo "MODERATE"
     fi
 }
 
@@ -125,7 +125,7 @@ update_risk_counters() {
     local risk_level=$1
     case $risk_level in
         "LOW") ((low_risk++)) ;;
-        "MEDIUM") ((medium_risk++)) ;;
+        "MODERATE") ((moderate_risk++)) ;;
         "HIGH") ((high_risk++)) ;;
     esac
 }
@@ -153,13 +153,78 @@ append_report() {
     local domain=$1
     local spf_status=$2
     local spf_detailled=$3
-    local dkim_status=$4
-    local dkim_detailled=$5
-    local dmarc_status=$6
-    local dmarc_detailled=$7
+    local spf_reason=$4
+    local dkim_status=$5
+    local dkim_detailled=$6
+    local dmarc_status=$7
+    local dmarc_detailled=$8
 
     local risk_level=$(calculate_risk "$spf_status" "$dkim_status" "$dmarc_status")
     update_risk_counters "$risk_level"
+
+    spf_csv="$spf_status"
+    local spf_reason_label=""
+    case "$spf_reason" in
+        multiple_records) spf_reason_label="multiple SPF records" ;;
+        plus_all) spf_reason_label="+all - accept all senders" ;;
+        neutral_all) spf_reason_label="?all - neutral, no protection" ;;
+        missing_all) spf_reason_label="missing 'all' mechanism" ;;
+        not_configured) spf_reason_label="not configured" ;;
+        softfail) spf_reason_label="~all - softfail" ;;
+        hardfail) spf_reason_label="-all" ;;
+        *) spf_reason_label="invalid configuration" ;;
+    esac
+    
+    dkim_csv="$dkim_status"
+    local dkim_reason_label=""
+    case "$dkim_status" in
+        OK) dkim_reason_label="RSA >2048 bits" ;;
+        MED) dkim_reason_label="RSA <2048 bits" ;;
+        NOK) dkim_reason_label="not configured" ;;
+    esac
+    dmarc_csv="$dmarc_status"
+    
+    case "$spf_status" in
+        OK)
+            spf_csv="OK"
+            ;;
+        MED)
+            spf_csv="MODERATE ($spf_reason_label)"
+            ;;
+        NOK)
+            spf_csv="NOK ($spf_reason_label)"
+            ;;
+    esac
+
+    case "$dkim_status" in
+        OK)
+            dkim_csv="OK"
+            ;;
+        MED)
+            dkim_csv="MODERATE ($dkim_reason_label)"
+            ;;
+        NOK)
+            dkim_csv="NOK ($dkim_reason_label)"
+            ;;
+    esac
+
+    case "$dmarc_status" in
+        OK)
+            dmarc_csv="OK"
+            ;;
+        MED)
+            dmarc_csv="MODERATE (quarantine)"
+            ;;
+        NOK)
+            if [[ "$dmarc_detailled" == *"p=none"* ]]; then
+                dmarc_csv="NOK (monitoring only)"
+            else
+                dmarc_csv="NOK (not configured)"
+            fi
+            ;;
+    esac
+
+    csv_table+="\"$domain\",\"$service\",\"$spf_csv\",\"$dkim_csv\",\"$dmarc_csv\",\"$risk_level\""$'\n'
 
     if [ "$html_output" = true ]; then
         local spf_cell="$spf_status"
@@ -167,17 +232,17 @@ append_report() {
         local dmarc_cell="$dmarc_status"
         
         if [ "$spf_status" = "NOK" ]; then
-            spf_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF configuration</a>)</small>"
+            spf_cell="<span style='color:red'>❌ NOK</span> <small>($spf_reason_label - <a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF configuration</a>)</small>"
         elif [ "$spf_status" = "MED" ]; then
-            spf_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF recommandations</a>)</small>"
+            spf_cell="<span style='color:orange'>⚠️ MODERATE</span> <small>($spf_reason_label - <a href='https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712' target='_blank'>SPF recommandations</a>)</small>"
         else
             spf_cell="<span style='color:green'>✅ OK</span>"
         fi
         
         if [ "$dkim_status" = "NOK" ]; then
-            dkim_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM configuration</a>)</small>"
+            dkim_cell="<span style='color:red'>❌ NOK</span> <small>($dkim_reason_label - <a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM configuration</a>)</small>"
         elif [ "$dkim_status" = "MED" ]; then
-            dkim_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM recommandations</a>)</small>"
+            dkim_cell="<span style='color:orange'>⚠️ MODERATE</span> <small>($dkim_reason_label - <a href='https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101' target='_blank'>DKIM recommandations</a>)</small>"
         else
             dkim_cell="<span style='color:green'>✅ OK</span>"
         fi
@@ -185,17 +250,45 @@ append_report() {
         if [ "$dmarc_status" = "NOK" ]; then
             dmarc_cell="<span style='color:red'>❌ NOK</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>DMARC configuration</a>)</small>"
         elif [ "$dmarc_status" = "MED" ]; then
-            dmarc_cell="<span style='color:orange'>⚠️ MEDIUM</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>DMARC recommandations</a>)</small>"
+            dmarc_cell="<span style='color:orange'>⚠️ MODERATE</span> <small>(<a href='https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153' target='_blank'>DMARC recommandations</a>)</small>"
         else
             dmarc_cell="<span style='color:green'>✅ OK</span>"
         fi
         
         case $risk_level in
             "LOW") risk_cell="<span style='color:green'>🟢 LOW</span>" ;;
-            "MEDIUM") risk_cell="<span style='color:orange'>🟡 MEDIUM</span>" ;;
+            "MODERATE") risk_cell="<span style='color:orange'>🟡 MODERATE</span>" ;;
             "HIGH") risk_cell="<span style='color:red'>🔴 HIGH</span>" ;;
         esac
-        
+
+spf_detail_badge=""
+dkim_detail_badge=""
+dmarc_detail_badge=""
+
+case "$spf_status" in
+    OK) spf_detail_badge="<span class='badge ok'>OK</span>" ;;
+    MED) spf_detail_badge="<span class='badge med'>$spf_reason_label</span>" ;;
+    NOK) spf_detail_badge="<span class='badge nok'>$spf_reason_label</span>" ;;
+esac
+
+case "$dkim_status" in
+    OK) dkim_detail_badge="<span class='badge ok'>OK</span>" ;;
+    MED) dkim_detail_badge="<span class='badge med'>MODERATE</span>" ;;
+    NOK) dkim_detail_badge="<span class='badge nok'>Not configured</span>" ;;
+esac
+
+case "$dmarc_status" in
+    OK) dmarc_detail_badge="<span class='badge ok'>reject</span>" ;;
+    MED) dmarc_detail_badge="<span class='badge med'>quarantine</span>" ;;
+    NOK)
+        if [[ "$dmarc_detailled" == *"p=none"* ]]; then
+            dmarc_detail_badge="<span class='badge nok'>monitoring only</span>"
+        else
+            dmarc_detail_badge="<span class='badge nok'>Not configured</span>"
+        fi
+        ;;
+esac
+
 details_html=$(cat << EOF
 <style>
 .detail-box { border-radius:8px; border:1px solid #e6e9ed; background:#fbfcfd; padding:14px; }
@@ -205,6 +298,7 @@ details_html=$(cat << EOF
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.8rem; margin-left:6px; font-weight:400; }
 .badge.ok { background:#e6ffed; color:#08660d; border:1px solid #b7f3c8; }
 .badge.nok { background:#ffecec; color:#a61b1b; border:1px solid #f3c2c2; }
+.badge.med { background:#fff7db; color:#8a5a00; border:1px solid #ffd66b; }
 .muted { color:#2d3748; font-weight:400; }
 .label { color:#6b7280; font-size:0.85rem; margin-right:6px; }
 .u { text-decoration:underline; color:#374151; }
@@ -215,9 +309,9 @@ details_html=$(cat << EOF
 
   <div class="detail-sub"><span class="u">Major controls:</span></div>
   <div class="tech">
-SPF:  $( [ -n "$spf_detailled" ] && echo "<span class='muted'> ${spf_detailled}</span>" || echo "<span class='badge nok'>Not configured</span>" )
-DKIM:   $( [ -n "$dkim_detailled" ] && echo "<span class='badge ok'>(RSA $dkim_detailled bits)</span>" || echo "<span class='badge nok'>Not configured</span>" )
-DMARC:  $( [ -n "$dmarc_detailled" ] && echo "<span class='muted'> ${dmarc_detailled}</span>" || echo "<span class='badge nok'>Not configured</span>" )
+SPF:    $( [ -n "$spf_detailled" ] && echo "$spf_detail_badge <span class='muted'>${spf_detailled}</span>" || echo $spf_detail_badge )
+$( [ -n "$dkim_detailled" ] && echo "$dkim_detailled" || echo "DKIM:   <span class='badge nok'>Not configured</span>" )
+DMARC:  $( [ -n "$dmarc_detailled" ] && echo "$dmarc_detail_badge <span class='muted'>${dmarc_detailled}</span>" || echo $dmarc_detail_badge )
   </div>
 
   <div class="detail-sub"><span class="u">Additional Security Protocols:</span></div>
@@ -240,21 +334,40 @@ EOF
         </tr>"
     else
         local spf_cell="$spf_status"
+        local spf_reason_label=""
+        case "$spf_reason" in
+            multiple_records) spf_reason_label="multiple SPF records" ;;
+            plus_all) spf_reason_label="+all - accept all senders" ;;
+            neutral_all) spf_reason_label="?all - neutral, no protection" ;;
+            missing_all) spf_reason_label="missing 'all' mechanism" ;;
+            not_configured) spf_reason_label="not configured" ;;
+            softfail) spf_reason_label="~all - softfail" ;;
+            hardfail) spf_reason_label="-all" ;;
+            *) spf_reason_label="invalid configuration" ;;
+        esac
+        
         local dkim_cell="$dkim_status"
+        local dkim_reason_label=""
+        case "$dkim_status" in
+            OK) dkim_reason_label="RSA >2048 bits" ;;
+            MED) dkim_reason_label="RSA <2048 bits" ;;
+            NOK) dkim_reason_label="not configured" ;;
+        esac
+        
         local dmarc_cell="$dmarc_status"
 
         if [ "$spf_status" = "NOK" ]; then
-            spf_cell="❌ NOK ([SPF configuration](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+            spf_cell="❌ NOK ($spf_reason_label - [SPF configuration](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
         elif [ "$spf_status" = "MED" ]; then
-            spf_cell="⚠️ MEDIUM ([SPF recommandation](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
+            spf_cell="⚠️ MODERATE ($spf_reason_label - [SPF recommandation](https://help.ovhcloud.com/csm/fr-dns-spf-record?id=kb_article_view&sysparm_article=KB0051712))"
         else
             spf_cell="✅ OK"
         fi
         
         if [ "$dkim_status" = "NOK" ]; then
-            dkim_cell="❌ NOK ([DKIM configuration](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+            dkim_cell="❌ NOK ($dkim_reason_label - [DKIM configuration](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
         elif [ "$dkim_status" = "MED" ]; then
-            dkim_cell="⚠️ MEDIUM ([DKIM recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
+            dkim_cell="⚠️ MODERATE ($dkim_reason_label - [DKIM recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dkim?id=kb_article_view&sysparm_article=KB0058101))"
         else
             dkim_cell="✅ OK"
         fi
@@ -262,14 +375,14 @@ EOF
         if [ "$dmarc_status" = "NOK" ]; then
             dmarc_cell="❌ NOK ([DMARC configuration](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
         elif [ "$dmarc_status" = "MED" ]; then
-            dmarc_cell="⚠️ MEDIUM ([DMARC recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
+            dmarc_cell="⚠️ MODERATE ([DMARC recommandation](https://help.ovhcloud.com/csm/fr-dns-zone-dmarc?id=kb_article_view&sysparm_article=KB0059153))"
         else
             dmarc_cell="✅ OK"
         fi
 
         case $risk_level in
             "LOW") risk_cell="🟢 LOW" ;;
-            "MEDIUM") risk_cell="🟡 MEDIUM" ;;
+            "MODERATE") risk_cell="🟡 MODERATE" ;;
             "HIGH") risk_cell="🔴 HIGH" ;;
         esac
 
@@ -319,65 +432,100 @@ check_domain() {
     echo -e "Service detected: ${GREEN}$service${NC}"
 
     # SPF Check
+    # SPF Check
     spf=$(dig "$domain" TXT +short | grep -i "v=spf1")
+    spf_count=$(printf "%s\n" "$spf" | grep -ic "v=spf1")
     spf_status="NOK"
-    
-    if [[ "$spf" == *"redirect="* ]]; then
+    spf_reason="not_configured"
+
+    if [ "$spf_count" -eq 1 ] && [[ "$spf" == *"redirect="* ]]; then
         redirect_domain=$(echo "$spf" | sed -n 's/.*redirect=\([^ ]*\).*/\1/p')
         redirect_domain=${redirect_domain%\"}
         spf=$(dig "$redirect_domain" TXT +short | grep -i "v=spf1" | tr -d '"')
+        spf_count=$(printf "%s\n" "$spf" | grep -ic "v=spf1")
     fi
 
     if [ -n "$spf" ]; then
-        if [[ "$spf" =~ \+all ]]; then
+        if [ "$spf_count" -gt 1 ]; then
+            print_result "SPF" "NOK" "$spf" "${RED}(multiple SPF records)${NC}"
+            spf_status="NOK"
+            spf_reason="multiple_records"
+        elif [[ "$spf" =~ \+all ]]; then
             print_result "SPF" "NOK" "$spf" "${RED}(+all - accept ALL expeditors !)${NC}"
             spf_status="NOK"
+            spf_reason="plus_all"
         elif [[ "$spf" =~ \?all ]]; then
             print_result "SPF" "NOK" "$spf" "${RED}(?all - neutral, no protection)${NC}"
             spf_status="NOK"
+            spf_reason="neutral_all"
         elif [[ "$spf" =~ ~all ]]; then
             print_result "SPF" "MED" "$spf" "${ORANGE}(~all - softfail)${NC}"
             spf_status="MED"
+            spf_reason="softfail"
         elif [[ "$spf" =~ -all ]]; then
             print_result "SPF" "OK" "$spf" "${GREEN}(-all)${NC}"
             spf_status="OK"
+            spf_reason="hardfail"
         else
             print_result "SPF" "NOK" "$spf" "${RED}(no all mechanism)${NC}"
             spf_status="NOK"
+            spf_reason="missing_all"
         fi
     else
-        print_result "SPF" "NOK" "Not configured" ""
+        print_result "SPF" "NOK" "${RED}Not configured${NC}" ""
         spf_status="NOK"
+        spf_reason="not_configured"
     fi
 
     # DKIM Check
     dkim_found=false
     dkim_status="NOK"
+    dkim_details=""
+    dkim_has_weak=false
+    dkim_has_bad=false
+    pk=""
     
     for selector in "${selectors[@]}"; do
         dkim=$(timeout 1 dig "$selector._domainkey.$domain" TXT +short | grep -i "v=DKIM1")
         if [ -n "$dkim" ]; then
-            dkim_found=true
-            dkim_status="OK"
             public_key=$(echo "$dkim" | sed -n 's/.*p=\([^;]*\).*/\1/p' | tr -d '" ')
-            
+    
             if [ -n "$public_key" ]; then
                 pk=$(echo "$public_key" | base64 -d 2>/dev/null | openssl rsa -inform DER -pubin -noout -text 2>/dev/null | sed -n 's/.*Public-Key: (\([0-9]*\) bit).*/\1/p')
+    
                 if [ -n "$pk" ]; then
+                    dkim_found=true
+    
                     if [ "$pk" -ge 2048 ]; then
+                        dkim_details+="DKIM ($selector): <span class='badge ok'>OK</span> - RSA $pk bits"$'\n'
                         print_result "DKIM ($selector)" "OK" "${GREEN}(RSA $pk bits)${NC}" ""
-                    else
+                    elif [ "$pk" -ge 1024 ]; then
+                        dkim_has_weak=true
+                        dkim_details+="DKIM ($selector): <span class='badge med'>MODERATE</span> - RSA $pk bits - weak"$'\n'
                         print_result "DKIM ($selector)" "MED" "${ORANGE}(RSA $pk bits - weak)${NC}" ""
-                        dkim_status="MED"
+                    else
+                        dkim_has_bad=true
+                        dkim_details+="DKIM ($selector): <span class='badge nok'>NOK</span> - RSA $pk bits - too weak"$'\n'
+                        print_result "DKIM ($selector)" "NOK" "${RED}(RSA $pk bits - too weak)${NC}" ""
                     fi
+                else
+                    dkim_details+="DKIM ($selector): INFO - invalid key"$'\n'
                 fi
+            else
+                dkim_details+="DKIM ($selector): INFO - empty/revoked key"$'\n'
             fi
         fi
     done
     
     if [ "$dkim_found" == false ]; then
-        print_result "DKIM" "NOK" "Not configured" ""
+        print_result "DKIM" "NOK" "${RED}Not configured${NC}" ""
         dkim_status="NOK"
+    elif [ "$dkim_has_bad" == true ]; then
+        dkim_status="NOK"
+    elif [ "$dkim_has_weak" == true ]; then
+        dkim_status="MED"
+    else
+        dkim_status="OK"
     fi
 
     # DMARC Check
@@ -399,7 +547,7 @@ check_domain() {
             dmarc_status="NOK"
         fi
     else
-        print_result "DMARC" "NOK" "Not configured" ""
+        print_result "DMARC" "NOK" "${RED}Not configured${NC}" ""
         dmarc_status="NOK"
     fi
 
@@ -440,11 +588,11 @@ check_domain() {
         echo -e "DNSSEC: ${RED}✗ Not activated${NC}"
     fi
 
-    append_report "$domain" "$spf_status" "$spf" "$dkim_status" "$pk" "$dmarc_status" "$dmarc"
+    append_report "$domain" "$spf_status" "$spf" "$spf_reason" "$dkim_status" "$dkim_details" "$dmarc_status" "$dmarc"
 }
 
 generate_html_report() {
-    local total_domains=$((low_risk + medium_risk + high_risk))
+    local total_domains=$((low_risk + moderate_risk + high_risk))
     
     cat << EOF
 <!DOCTYPE html>
@@ -463,19 +611,22 @@ generate_html_report() {
         .risk-distribution { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
         .risk-card { background: #f8f9fa; border-radius: 8px; padding: 20px; text-align: center; border-left: 4px solid #ddd; }
         .risk-low { border-left-color: #28a745; }
-        .risk-medium { border-left-color: #ffc107; }
+        .risk-moderate { border-left-color: #ffc107; }
         .risk-high { border-left-color: #dc3545; }
         .risk-card h3 { margin: 0 0 10px; font-size: 1.2em; }
         .risk-card .count { font-size: 2em; font-weight: bold; margin: 10px 0; }
         .risk-card .percentage { color: #666; }
         .details-row { display: none; background: #fafafa; }
         .details-cell { padding: 0 20px 15px 20px; }
+        .sortable { cursor: pointer; user-select: none; }
+        .sortable:hover { background: #eef6ff; }
         tr.clickable:hover { background: #eef6ff; cursor: pointer; }
         pre { margin: 0; font-size: 0.9em; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
         th { background: #f8f9fa; font-weight: 600; color: #495057; }
         tr:hover { background: #f8f9fa; }
+        .badge.med { background:#fff7db; color:#8a5a00; border:1px solid #ffd66b; }
         a { color: #007bff; text-decoration: none; }
         a:hover { text-decoration: underline; }
         small { font-size: 0.8em; }
@@ -496,10 +647,10 @@ generate_html_report() {
                     <div class="count">$low_risk</div>
                     <div class="percentage">$([ $total_domains -gt 0 ] && echo "$((low_risk * 100 / total_domains))%" || echo "0%")</div>
                 </div>
-                <div class="risk-card risk-medium">
-                    <h3>🟡 Medium Risk</h3>
-                    <div class="count">$medium_risk</div>
-                    <div class="percentage">$([ $total_domains -gt 0 ] && echo "$((medium_risk * 100 / total_domains))%" || echo "0%")</div>
+                <div class="risk-card risk-moderate">
+                    <h3>🟡 Moderate Risk</h3>
+                    <div class="count">$moderate_risk</div>
+                    <div class="percentage">$([ $total_domains -gt 0 ] && echo "$((moderate_risk * 100 / total_domains))%" || echo "0%")</div>
                 </div>
                 <div class="risk-card risk-high">
                     <h3>🔴 High Risk</h3>
@@ -514,11 +665,11 @@ generate_html_report() {
             <table>
                 <thead>
                     <tr>
-                        <th>Domain</th>
-                        <th>SPF</th>
-                        <th>DKIM</th>
-                        <th>DMARC</th>
-                        <th>Risk Level</th>
+                        <th class="sortable" title="Click to sort">Domain</th>
+                        <th class="sortable" title="Click to sort">SPF</th>
+                        <th class="sortable" title="Click to sort">DKIM</th>
+                        <th class="sortable" title="Click to sort">DMARC</th>
+                        <th class="sortable" title="Click to sort">Risk Level</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -530,13 +681,101 @@ $domains_table
             <p>Generated by <a href="https://github.com/Elymaro/mailynx" target="_blank" rel="noopener noreferrer" style="color:inherit; text-decoration:none;"><u>Mailynx</u></a> - Mail DNS Records Audit Tool</p>
         </div>
     </div>
-    <script>
-        function toggleDetails(row) {
-            const next = row.nextElementSibling;
-            if (next && next.classList.contains('details-row')) {
-                next.style.display = next.style.display === 'table-row' ? 'none' : 'table-row';
-            }
+<script>
+      function toggleDetails(row) {
+        const detailsRow = row.nextElementSibling;
+        if (detailsRow && detailsRow.classList.contains("details-row")) {
+          detailsRow.style.display =
+            detailsRow.style.display === "table-row" ? "none" : "table-row";
         }
+      }
+
+      document.querySelectorAll("th").forEach((header, columnIndex) => {
+        let ascending = true;
+
+        header.style.cursor = "pointer";
+
+        header.addEventListener("click", () => {
+          const tableBody = header.closest("table").querySelector("tbody");
+
+          const rowPairs = Array.from(
+            tableBody.querySelectorAll("tr.clickable"),
+          ).map((domainRow) => ({
+            domainRow,
+            detailsRow: domainRow.nextElementSibling,
+          }));
+
+          rowPairs.sort((first, second) => {
+            const firstValue =
+              first.domainRow.cells[columnIndex].innerText.trim();
+            const secondValue =
+              second.domainRow.cells[columnIndex].innerText.trim();
+
+            if (columnIndex >= 1 && columnIndex <= 3) {
+              const statusOrder = {
+                OK: 1,
+                MODERATE: 2,
+                NOK: 3,
+              };
+
+              const firstStatus = firstValue.includes(" OK")
+                ? "OK"
+                : firstValue.includes("MODERATE")
+                  ? "MODERATE"
+                  : "NOK";
+
+              const secondStatus = secondValue.includes(" OK")
+                ? "OK"
+                : secondValue.includes("MODERATE")
+                  ? "MODERATE"
+                  : "NOK";
+
+              return ascending
+                ? statusOrder[firstStatus] - statusOrder[secondStatus]
+                : statusOrder[secondStatus] - statusOrder[firstStatus];
+            }
+
+            if (columnIndex === 4) {
+              const riskOrder = {
+                LOW: 1,
+                MODERATE: 2,
+                HIGH: 3,
+              };
+
+              const firstRisk = firstValue.includes("LOW")
+                ? "LOW"
+                : firstValue.includes("MODERATE")
+                  ? "MODERATE"
+                  : "HIGH";
+
+              const secondRisk = secondValue.includes("LOW")
+                ? "LOW"
+                : secondValue.includes("MODERATE")
+                  ? "MODERATE"
+                  : "HIGH";
+
+              return ascending
+                ? riskOrder[firstRisk] - riskOrder[secondRisk]
+                : riskOrder[secondRisk] - riskOrder[firstRisk];
+            }
+
+            return ascending
+              ? firstValue.localeCompare(secondValue, undefined, {
+                  numeric: true,
+                })
+              : secondValue.localeCompare(firstValue, undefined, {
+                  numeric: true,
+                });
+          });
+
+          ascending = !ascending;
+
+          rowPairs.forEach((pair) => {
+            tableBody.appendChild(pair.domainRow);
+            tableBody.appendChild(pair.detailsRow);
+          });
+        });
+      });
     </script>
 </body>
 </html>
@@ -544,7 +783,7 @@ EOF
 }
 
 generate_markdown_report() {
-    local total_domains=$((low_risk + medium_risk + high_risk))
+    local total_domains=$((low_risk + moderate_risk + high_risk))
     
     cat << EOF
 # Mailynx Report
@@ -554,7 +793,7 @@ generate_markdown_report() {
 | Risk Level | Count | Percentage |
 |------------|-------|------------|
 | 🟢 LOW | $low_risk | $([ $total_domains -gt 0 ] && echo "$((low_risk * 100 / total_domains))%" || echo "0%") |
-| 🟡 MEDIUM | $medium_risk | $([ $total_domains -gt 0 ] && echo "$((medium_risk * 100 / total_domains))%" || echo "0%") |
+| 🟡 MODERATE | $moderate_risk | $([ $total_domains -gt 0 ] && echo "$((moderate_risk * 100 / total_domains))%" || echo "0%") |
 | 🔴 HIGH | $high_risk | $([ $total_domains -gt 0 ] && echo "$((high_risk * 100 / total_domains))%" || echo "0%") |
 
 **Total domains analyzed:** $total_domains
@@ -566,12 +805,21 @@ generate_markdown_report() {
 $domains_table
 
 ---
-*Generated by Mailynx - Mail DNS Records Audit Tool*
+*Generated by [Mailynx](https://github.com/Elymaro/mailynx) - Mail DNS Records Audit Tool*
+EOF
+}
+
+generate_csv_report() {
+
+cat << EOF
+Domain,Service,SPF,DKIM,DMARC,Risk Level
+$csv_table
 EOF
 }
 
 # Initialize domains table
 domains_table=""
+csv_table=""
 
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════════╗"
@@ -595,13 +843,20 @@ echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━�
 echo -e "${GREEN}Analysis Complete!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-# Generate and save report if output_file is set
+# Generate and save reports
 if [ -n "$output_file" ]; then
-    if [ "$html_output" = true ]; then
-        generate_html_report > "$output_file"
-        echo -e "${GREEN}HTML report saved to $output_file${NC}"
-    else
-        generate_markdown_report > "$output_file"
-        echo -e "${GREEN}Markdown report saved to $output_file${NC}"
-    fi
+    output_base="${output_file%.*}"
+else
+    output_base="mailynx_output"
 fi
+
+if [ "$html_output" = true ]; then
+    generate_html_report > "${output_base}.html"
+    echo -e "${GREEN}HTML report saved to ${output_base}.html${NC}"
+elif [ -n "$output_file" ]; then
+    generate_markdown_report > "${output_base}.md"
+    echo -e "${GREEN}Markdown report saved to ${output_base}.md${NC}"
+fi
+
+generate_csv_report > "${output_base}.csv"
+echo -e "${GREEN}CSV report saved to ${output_base}.csv${NC}"

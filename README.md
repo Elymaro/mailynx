@@ -39,6 +39,8 @@ For DMARC, the tool ensures a policy is defined and sufficiently strict. Missing
 | `~all`    | Soft fail            | The email is **accepted but marked as suspicious** *(likely to be flagged as spam)*      |
 | `?all`    | Neutral              | The email is **accepted without validation**                                             |
 | `+all`    | Pass everything      | The email is **always accepted and considered SPF-compliant**, even for unauthorized IPs |
+| Missing `all` mechanism | Implicit neutral fallback | Behaves like `?all` if no mechanism matches |
+| Multiple SPF records | Invalid SPF setup | SPF returns **PermError** and does **not pass** |
 
 #### DKIM
 
