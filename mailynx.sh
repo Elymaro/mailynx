@@ -80,7 +80,7 @@ high_risk=0
 
 sanitize_domain() {
     local raw_domain=$1
-    echo "$raw_domain" | sed -E 's~^https?://~~' | sed -E 's~/.*~~'
+    echo "$raw_domain" | sed -E 's~^https?://~~' | sed -E 's~/.*~~' | sed -E 's/^www\.//'
 }
 
 print_result() {
